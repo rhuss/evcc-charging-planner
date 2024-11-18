@@ -127,6 +127,11 @@ func createMessageHandler(client *mqtt.Client, config *Config) func(string) {
 			return
 		}
 
+		if event.Mode != "connect" {
+			log.DEBUG.Printf("ignoring non-connect event %v", event)
+			return
+		}
+
 		vehicleConfig := extractVehicleConfig(config, event)
 		if vehicleConfig == nil {
 			log.DEBUG.Printf("ignoring event for %s (no configuration)", event.Vehicle)

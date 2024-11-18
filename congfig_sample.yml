@@ -2,7 +2,11 @@ mqtt:
   broker: "tcp://localhost:1883"
   username: "user"
   password: "pass"
-
+  topics:
+    # Topic to listen on for connect/disconnect events
+    events: "evcc/events"
+    # Topic to send the target charging time. Use %s as placeholder for the vehicle id
+    planSoc: "evcc/vehicles/%s/planSoc"
 vehicles:
   - name: "ioniq6"
     soc: 80

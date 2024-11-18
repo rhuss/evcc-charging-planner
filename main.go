@@ -6,119 +6,135 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"github.com/evcc-io/evcc/util"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
-	mqtt "github.com/eclipse/paho.mqtt.golang"
+	mqtt "github.com/evcc-io/evcc/provider/mqtt"
 	"gopkg.in/yaml.v2"
 )
 
 type Config struct {
-	MQTT struct {
-		Broker   string `yaml:"broker"`
-		Username string `yaml:"username"`
-		Password string `yaml:"password"`
-	} `yaml:"mqtt"`
-	Vehicles []VehicleConfig `yaml:"vehicles"`
+	MQTT     mqttConfig      `yaml:"mqtt"`
+	Vehicles []vehicleConfig `yaml:"vehicles"`
 }
 
-type VehicleConfig struct {
+type mqttConfig struct {
+	mqtt.Config `mapstructure:",squash"`
+	Topics      topicsConfig `yaml:"topics"`
+}
+
+type topicsConfig struct {
+	Events  string `yaml:"events"`
+	PlanSoc string `yaml:"planSoc"`
+}
+
+type vehicleConfig struct {
 	Name     string          `yaml:"name"`
 	SOC      int             `yaml:"soc"` // Changed from target_soc to soc
-	Schedule []ScheduleEntry `yaml:"schedule"`
+	Schedule []scheduleEntry `yaml:"schedule"`
 }
 
-type ScheduleEntry struct {
+type scheduleEntry struct {
 	Day  string `yaml:"day"`  // Changed from weekday to day
 	Time string `yaml:"time"` // Changed from end_time to time
 	SOC  *int   `yaml:"soc,omitempty"`
 }
 
+// Event payload
 type Event struct {
 	Vehicle string `json:"vehicle"`
 	Mode    string `json:"mode"`
 	Type    string `json:"type"`
 }
 
+var log *util.Logger
+
 func main() {
+	log = util.NewLogger("charging_planner")
+
 	// Parse command-line options
 	configPath := flag.String("config", "", "Path to the YAML configuration file")
 	flag.Parse()
 
 	if *configPath == "" {
-		log.Fatal("Please provide a configuration file path with -config option")
+		log.FATAL.Println("Please provide a configuration file path with -config option")
+		os.Exit(1)
 	}
 
 	// Read the YAML configuration file using os.ReadFile
 	configData, err := os.ReadFile(*configPath)
 	if err != nil {
-		log.Fatalf("Error reading configuration file: %v", err)
+		log.FATAL.Printf("Error reading configuration file: %v", err)
+		os.Exit(1)
 	}
 
-	var config Config
+	config := Config{
+		MQTT: mqttConfig{
+			Topics: topicsConfig{
+				Events:  "evcc/events",
+				PlanSoc: "evcc/vehicles/%s/planSoc",
+			},
+		},
+	}
 	err = yaml.Unmarshal(configData, &config)
 	if err != nil {
-		log.Fatalf("Error parsing configuration file: %v", err)
+		log.FATAL.Printf("Error parsing configuration file: %v", err)
 	}
 
-	// Connect to MQTT broker
-	opts := mqtt.NewClientOptions()
-	opts.AddBroker(config.MQTT.Broker)
-	opts.SetUsername(config.MQTT.Username)
-	opts.SetPassword(config.MQTT.Password)
-	opts.SetAutoReconnect(true)
-	client := mqtt.NewClient(opts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		log.Fatalf("Error connecting to MQTT broker: %v", token.Error())
+	mConfig := config.MQTT
+	client, err := mqtt.NewClient(log, mConfig.Broker, mConfig.User, mConfig.Password, mConfig.ClientID, 1, mConfig.Insecure, mConfig.CaCert, mConfig.ClientCert, mConfig.ClientKey)
+	if err != nil {
+		log.FATAL.Printf("Error connecting to MQTT broker: %v", err)
+		os.Exit(1)
 	}
-	defer client.Disconnect(250)
+	defer client.Client.Disconnect(250)
 
 	// Subscribe to the MQTT topic
-	topic := "evcc/events"
-	token := client.Subscribe(topic, 0, func(client mqtt.Client, msg mqtt.Message) {
-		handleMessage(client, msg, &config)
-	})
-	if token.Wait() && token.Error() != nil {
-		log.Fatalf("Error subscribing to topic %s: %v", topic, token.Error())
+	topic := config.MQTT.Topics.Events
+	err = client.Listen(topic, createMessageHandler(client, &config))
+	if err != nil {
+		log.FATAL.Printf("Error subscribing to topic %s: %v", topic, err)
+		os.Exit(1)
 	}
 
 	// Keep the program running
 	select {}
 }
 
-func handleMessage(client mqtt.Client, msg mqtt.Message, config *Config) {
-	// Parse the message payload
-	var event Event
-	err := json.Unmarshal(msg.Payload(), &event)
-	if err != nil {
-		log.Printf("Error parsing event JSON: %v", err)
-		return
-	}
+func createMessageHandler(client *mqtt.Client, config *Config) func(string) {
+	return func(msg string) {
+		// Parse the message payload
+		var event Event
+		err := json.Unmarshal([]byte(msg), &event)
+		if err != nil {
+			log.ERROR.Printf("error parsing event JSON: %v", err)
+			return
+		}
 
-	// Check if the vehicle is in the configuration
-	var vehicleConfig *VehicleConfig
-	for i, v := range config.Vehicles {
-		if v.Name == event.Vehicle {
-			vehicleConfig = &config.Vehicles[i]
-			break
+		vehicleConfig := extractVehicleConfig(config, event)
+		if vehicleConfig == nil {
+			log.DEBUG.Printf("ignoring event for %s (no configuration)", event.Vehicle)
+			return
+		}
+
+		// Calculate the next charging time and target SOC
+		nextChargeTime, targetSOC, err := calculateNextChargeTime(vehicleConfig.Schedule, time.Now(), vehicleConfig.SOC)
+		if err != nil {
+			log.ERROR.Printf("error calculating next charge time for %s: %v", event.Vehicle, err)
+			return
+		}
+
+		err = sendChargingEndTime(targetSOC, nextChargeTime, config.MQTT.Topics.PlanSoc, vehicleConfig.Name, client)
+		if err != nil {
+			log.ERROR.Printf("error setting target time %s (target-soc: %d) : %v", nextChargeTime, targetSOC, err)
 		}
 	}
+}
 
-	if vehicleConfig == nil {
-		// Vehicle not in configuration; ignore
-		return
-	}
-
-	// Calculate the next charging time and target SOC
-	nextChargeTime, targetSOC, err := calculateNextChargeTime(vehicleConfig.Schedule, time.Now(), vehicleConfig.SOC)
-	if err != nil {
-		log.Printf("Error calculating next charge time: %v", err)
-		return
-	}
-
+func sendChargingEndTime(targetSOC int, nextChargeTime time.Time, planSocTopic string, vehicleId string, client *mqtt.Client) error {
 	// Prepare the payload
 	payloadMap := map[string]interface{}{
 		"value": targetSOC,
@@ -126,22 +142,31 @@ func handleMessage(client mqtt.Client, msg mqtt.Message, config *Config) {
 	}
 	payloadBytes, err := json.Marshal(payloadMap)
 	if err != nil {
-		log.Printf("Error marshaling payload JSON: %v", err)
-		return
+		return fmt.Errorf("error marshaling payload JSON: %w", err)
 	}
 
 	// Publish to the MQTT topic
-	publishTopic := fmt.Sprintf("evcc/events/%s/planSoc", vehicleConfig.Name)
-	token := client.Publish(publishTopic, 0, false, payloadBytes)
-	if token.Wait() && token.Error() != nil {
-		log.Printf("Error publishing to topic %s: %v", publishTopic, token.Error())
-		return
+	publishTopic := fmt.Sprintf(planSocTopic, vehicleId)
+	err = client.Publish(publishTopic, false, payloadBytes)
+	if err != nil {
+		return fmt.Errorf("error publishing to topic %s: %w", publishTopic, err)
 	}
 
-	log.Printf("Published planSoc for vehicle %s: %s", vehicleConfig.Name, string(payloadBytes))
+	log.DEBUG.Printf("published planSoc for vehicle %s: %s", vehicleId, string(payloadBytes))
+	return nil
 }
 
-func calculateNextChargeTime(schedule []ScheduleEntry, now time.Time, globalSOC int) (time.Time, int, error) {
+func extractVehicleConfig(config *Config, event Event) *vehicleConfig {
+	// Check if the vehicle is in the configuration
+	for i, v := range config.Vehicles {
+		if v.Name == event.Vehicle {
+			return &config.Vehicles[i]
+		}
+	}
+	return nil
+}
+
+func calculateNextChargeTime(schedule []scheduleEntry, now time.Time, globalSOC int) (time.Time, int, error) {
 	var candidateTimes []struct {
 		Time time.Time
 		SOC  int

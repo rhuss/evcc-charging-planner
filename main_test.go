@@ -2,6 +2,8 @@
 package main
 
 import (
+	"gopkg.in/yaml.v2"
+	"os"
 	"testing"
 	"time"
 )
@@ -33,7 +35,7 @@ func TestParseDays(t *testing.T) {
 
 func TestCalculateNextChargeTime(t *testing.T) {
 	// Define the schedule as per the updated configuration
-	schedule := []ScheduleEntry{
+	schedule := []scheduleEntry{
 		{Day: "Monday", Time: "07:00", SOC: intPtr(70)},  // Specific day with SOC
 		{Day: "Wednesday", Time: "07:00"},                // Specific day without SOC
 		{Day: "Friday", Time: "07:00", SOC: intPtr(90)},  // Specific day with SOC
@@ -118,6 +120,105 @@ func TestCalculateNextChargeTime(t *testing.T) {
 			}
 			if targetSOC != tc.expectedSOC {
 				t.Errorf("At time %v, expected SOC %d, got %d", currentTime, tc.expectedSOC, targetSOC)
+			}
+		})
+	}
+}
+
+func TestParseConfig(t *testing.T) {
+	// Define test cases
+	testCases := []struct {
+		name          string
+		configContent string
+		expectError   bool
+	}{
+		{
+			name: "Happy Path",
+			configContent: `
+mqtt:
+  broker: "tcp://localhost:1883"
+  username: "user"
+  password: "pass"
+  topics:
+    events: "bla/blub"
+    planSoc: "foo/bar"
+
+vehicles:
+  - name: "ioniq6"
+    soc: 80
+    schedule:
+      - day: "Monday"
+        time: "07:00"
+        soc: 70
+      - day: "Wednesday"
+        time: "07:00"
+      - day: "Friday"
+        time: "07:00"
+        soc: 90
+      - day: "workday"
+        time: "08:00"
+      - day: "weekend"
+        time: "09:00"
+        soc: 60
+`,
+			expectError: false,
+		},
+		{
+			name: "Invalid YAML",
+			configContent: `
+mqtt:
+  broker: "tcp://localhost:1883"
+  username "user"  # Missing colon
+  password: "pass"
+
+vehicles:
+  - name: "ioniq6"
+    soc: 80
+`,
+			expectError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a temporary file
+			tmpFile, err := os.CreateTemp("", "config-*.yaml")
+			if err != nil {
+				t.Fatalf("Failed to create temporary file: %v", err)
+			}
+			// Ensure the file is removed after the test
+			defer os.Remove(tmpFile.Name())
+
+			// Write the config content to the temporary file
+			if _, err := tmpFile.Write([]byte(tc.configContent)); err != nil {
+				t.Fatalf("Failed to write to temporary file: %v", err)
+			}
+			// Close the file so it can be read
+			if err := tmpFile.Close(); err != nil {
+				t.Fatalf("Failed to close temporary file: %v", err)
+			}
+
+			// Attempt to read and parse the configuration
+			configData, err := os.ReadFile(tmpFile.Name())
+			if err != nil {
+				t.Fatalf("Error reading configuration file: %v", err)
+			}
+
+			var config Config
+			err = yaml.Unmarshal(configData, &config)
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				} else {
+					t.Logf("Received expected error: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error parsing configuration: %v", err)
+				} else {
+					// Additional checks can be performed here to verify the config content
+					t.Logf("Parsed configuration successfully: %+v", config)
+				}
 			}
 		})
 	}

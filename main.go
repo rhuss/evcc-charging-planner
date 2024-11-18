@@ -6,8 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -32,9 +32,9 @@ type VehicleConfig struct {
 }
 
 type ScheduleEntry struct {
-	Day  string `yaml:"day"`           // Changed from weekday to day
-	Time string `yaml:"time"`          // Changed from end_time to time
-	SOC  *int   `yaml:"soc,omitempty"` // Changed from target_soc to soc
+	Day  string `yaml:"day"`  // Changed from weekday to day
+	Time string `yaml:"time"` // Changed from end_time to time
+	SOC  *int   `yaml:"soc,omitempty"`
 }
 
 type Event struct {
@@ -52,8 +52,8 @@ func main() {
 		log.Fatal("Please provide a configuration file path with -config option")
 	}
 
-	// Read the YAML configuration file
-	configData, err := ioutil.ReadFile(*configPath)
+	// Read the YAML configuration file using os.ReadFile
+	configData, err := os.ReadFile(*configPath)
 	if err != nil {
 		log.Fatalf("Error reading configuration file: %v", err)
 	}
@@ -147,6 +147,8 @@ func calculateNextChargeTime(schedule []ScheduleEntry, now time.Time, globalSOC 
 		SOC  int
 	}
 
+	location := time.Local // Use local time zone
+
 	for _, entry := range schedule {
 		// Determine the weekdays for this entry
 		weekdays, err := parseDays(entry.Day)
@@ -154,8 +156,8 @@ func calculateNextChargeTime(schedule []ScheduleEntry, now time.Time, globalSOC 
 			return time.Time{}, 0, err
 		}
 
-		// Parse the time
-		parsedTime, err := time.Parse("15:04", entry.Time)
+		// Parse the time in local time zone
+		parsedTime, err := time.ParseInLocation("15:04", entry.Time, location)
 		if err != nil {
 			return time.Time{}, 0, err
 		}
@@ -167,10 +169,10 @@ func calculateNextChargeTime(schedule []ScheduleEntry, now time.Time, globalSOC 
 		}
 
 		for _, weekday := range weekdays {
-			// Calculate the candidate date
+			// Calculate the candidate date in local time zone
 			daysUntilWeekday := (int(weekday) - int(now.Weekday()) + 7) % 7
 			candidateDate := now.AddDate(0, 0, daysUntilWeekday)
-			candidateTime := time.Date(candidateDate.Year(), candidateDate.Month(), candidateDate.Day(), parsedTime.Hour(), parsedTime.Minute(), 0, 0, candidateDate.Location())
+			candidateTime := time.Date(candidateDate.Year(), candidateDate.Month(), candidateDate.Day(), parsedTime.Hour(), parsedTime.Minute(), 0, 0, location)
 			if candidateTime.Before(now) {
 				// If the candidate time is before now, add 7 days
 				candidateTime = candidateTime.AddDate(0, 0, 7)

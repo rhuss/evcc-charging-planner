@@ -1,4 +1,4 @@
-module github.com/rhuss/charging-planner
+module github.com/rhuss/evcc-charging-planner
 
 go 1.23.3
 

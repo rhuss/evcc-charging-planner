@@ -1,6 +1,6 @@
 mqtt:
-  broker: "tcp://localhost:1883"
-  username: "user"
+  broker: "broker.mqtt"
+  user: "user"
   password: "pass"
   topics:
     # Topic to listen on for connect/disconnect events

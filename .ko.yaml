@@ -1,5 +1,5 @@
 baseImageOverrides:
-   "./main.go": "busybox"
+  "./main.go": "busybox"
 # "./main.go": "gcr.io/distroless/static:nonroot"
 imageOverrides:
   "github.com/rhuss/evcc-charging-planner": "rhuss/evcc-charging-planner"

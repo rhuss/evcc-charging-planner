@@ -12,26 +12,34 @@ import (
 	"strings"
 	"time"
 
-	mqtt "github.com/evcc-io/evcc/provider/mqtt"
+	"github.com/evcc-io/evcc/provider/mqtt"
 	"gopkg.in/yaml.v2"
 )
 
 type Config struct {
-	MQTT     mqttConfig      `yaml:"mqtt"`
-	Vehicles []vehicleConfig `yaml:"vehicles"`
+	MQTT     MqttConfig      `yaml:"mqtt"`
+	Vehicles []VehicleConfig `yaml:"vehicles"`
+	Log      string          `yaml:"log"`
 }
 
-type mqttConfig struct {
-	mqtt.Config `mapstructure:",squash"`
-	Topics      topicsConfig `yaml:"topics"`
+type MqttConfig struct {
+	Broker     string       `json:"broker"`
+	User       string       `json:"user"`
+	Password   string       `json:"password"`
+	ClientID   string       `json:"clientID"`
+	Insecure   bool         `json:"insecure"`
+	CaCert     string       `json:"caCert"`
+	ClientCert string       `json:"clientCert"`
+	ClientKey  string       `json:"clientKey"`
+	Topics     TopicsConfig `yaml:"topics"`
 }
 
-type topicsConfig struct {
+type TopicsConfig struct {
 	Events  string `yaml:"events"`
 	PlanSoc string `yaml:"planSoc"`
 }
 
-type vehicleConfig struct {
+type VehicleConfig struct {
 	Name     string          `yaml:"name"`
 	SOC      int             `yaml:"soc"` // Changed from target_soc to soc
 	Schedule []scheduleEntry `yaml:"schedule"`
@@ -54,6 +62,7 @@ var log *util.Logger
 
 func main() {
 	log = util.NewLogger("charging_planner")
+	util.LogLevel("info", nil)
 
 	// Parse command-line options
 	configPath := flag.String("config", "", "Path to the YAML configuration file")
@@ -72,10 +81,10 @@ func main() {
 	}
 
 	config := Config{
-		MQTT: mqttConfig{
-			Topics: topicsConfig{
+		MQTT: MqttConfig{
+			Topics: TopicsConfig{
 				Events:  "evcc/events",
-				PlanSoc: "evcc/vehicles/%s/planSoc",
+				PlanSoc: "evcc/vehicles/%s/planSoc/set",
 			},
 		},
 	}
@@ -84,7 +93,11 @@ func main() {
 		log.FATAL.Printf("Error parsing configuration file: %v", err)
 	}
 
-	mConfig := config.MQTT
+	if config.Log != "" {
+		util.LogLevel(config.Log, nil)
+	}
+
+	mConfig := &config.MQTT
 	client, err := mqtt.NewClient(log, mConfig.Broker, mConfig.User, mConfig.Password, mConfig.ClientID, 1, mConfig.Insecure, mConfig.CaCert, mConfig.ClientCert, mConfig.ClientKey)
 	if err != nil {
 		log.FATAL.Printf("Error connecting to MQTT broker: %v", err)
@@ -152,11 +165,11 @@ func sendChargingEndTime(targetSOC int, nextChargeTime time.Time, planSocTopic s
 		return fmt.Errorf("error publishing to topic %s: %w", publishTopic, err)
 	}
 
-	log.DEBUG.Printf("published planSoc for vehicle %s: %s", vehicleId, string(payloadBytes))
+	log.DEBUG.Printf("published to %s for vehicle '%s': %s", planSocTopic, vehicleId, string(payloadBytes))
 	return nil
 }
 
-func extractVehicleConfig(config *Config, event Event) *vehicleConfig {
+func extractVehicleConfig(config *Config, event Event) *VehicleConfig {
 	// Check if the vehicle is in the configuration
 	for i, v := range config.Vehicles {
 		if v.Name == event.Vehicle {

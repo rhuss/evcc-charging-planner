@@ -1,0 +1,24 @@
+mqtt:
+  broker: "tcp://localhost:1883"
+  username: "user"
+  password: "pass"
+
+vehicles:
+  - name: "ioniq6"
+    soc: 80
+    schedule:
+      - day: "Monday"
+        time: "07:00"
+        soc: 70
+      - day: "Wednesday"
+        time: "07:00"
+        # No soc specified; will use global soc (80)
+      - day: "Friday"
+        time: "07:00"
+        soc: 90
+      - day: "workday"
+        time: "08:00"
+        # Applies to all workdays not already specified
+      - day: "weekend"
+        time: "09:00"
+        soc: 60

@@ -14,7 +14,7 @@ test:
 
 .PHONY: container
 container:
-	KO_DOCKER_REPO=docker.io ko build -B --tags latest --push --platform=all --image-refs ./image-refs.yaml .
+	KO_DOCKER_REPO=docker.io/rhuss ko build -B --tags latest --push --platform=all --image-refs ./image-refs.yaml .
 
 .PHONY: clean
 clean:

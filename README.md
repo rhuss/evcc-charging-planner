@@ -1,75 +1,69 @@
-## Charging Planner for evcc
+# Charging Planner for evcc
 
-[evcc](https://evcc.io) is a great tool for flexibly charging your electrical vehicles. 
-One of the rare missing features so far is a charging plan for the whole week, in order to guarantee that the car is charged for sure at a configured time.
-In evcc you can set a single target time for the end of your loading session, but it is erased as soon as the session is over so that you have to re-enter it every day if you have a regular loading schedule.
+[evcc](https://evcc.io) is a powerful tool for flexibly charging your electric vehicles. However, one feature that's currently missing is a weekly charging plan to ensure your car is charged and ready by a configured time each day. 
 
-But luckily and thanks to the good extensibility of evcc you can implement such a scheduler easy on your own. 
+While evcc allows you to set a single target time for the end of a charging session, this setting is cleared after the session ends, requiring manual re-entry for regular schedules. 
 
-It works like this:
+Fortunately, thanks to evcc's extensibility, you can implement such a scheduler yourself. Here's how it works:
 
-* When evcc detects that a vehicle gets connected it can send an event to external services that you can configure in the configuration file. 
-* A program listening to the event can calculate the next end time of a charging session. By default evcc loads with the excess energy of your PV but with a given endpoint it ensures that your car reaches the configured State-of-Charge (SoC) until that end date. If not enough sun energy is available the remainign energy is taken from the grid (and if you are using a dynamic pricemodel for your current, it even selects the cheapest time to do so). The information of the desired end times can come e.g. from another static configuration file.
-* The result (end time and target SoC) is then sent to evcc which then sets this end date.
+- **Event Detection**: When evcc detects a vehicle connection, it can trigger an event to external services as configured in its settings.
+- **Charging Plan Calculation**: An external program listens for these events and calculates the next charging session's end time. By default, evcc uses excess solar energy from your PV system, but it ensures your car reaches the configured State of Charge (SoC) by the specified time. If solar energy isn't sufficient, it draws the remaining energy from the grid, potentially optimizing costs by using dynamic electricity pricing.
+- **Plan Submission**: The program sends the calculated end time and target SoC to evcc, which sets the charging schedule accordingly.
 
-In short, as soon as you connect your car to your wallbox, an external program will set the charging plan in evcc like you would do via the UI.
+In summary, this setup automates the process of configuring a charging plan in evcc whenever your car is connected to the wallbox.
 
-This is a Prove-of-Concept (which actually is another wording for no long-term support is planned) that leverages a static configuration file to define charging plan and needs an MQTT broker for communication with evcc. 
+> > [!IMPORTANT]  
+> It requires the latest version of evcc, which you must compile from the [evcc GitHub repository](https://github.com/evcc-io/evcc). There is no official release yet.
 
-> [!IMPORTANT]  
-> This project works only with the latest version of evcc that you need 
-> to compile on your own from https://github.com/evcc-io/evcc
-> There is no release yet.
+## Example Configuration
 
-Here's an example:
-
-``` yaml
-
+```yaml
 # MQTT configuration to connect to the broker. You can use the same 
-# configuration options as for evcc itself. 
+# configuration options as evcc itself. 
 # See https://docs.evcc.io/docs/reference/configuration/mqtt
 mqtt:
   broker: "broker.mqtt"
   user: "user"
   password: "pass"
-  # Topics for connect to the evcc instance. The following 
-  # values are the defaults and don't need to be changed usually.
+  # Topics for connecting to the evcc instance. The following 
+  # values are the defaults and usually don't need to be changed.
   topics:
     # Topic to listen on for connect/disconnect events
     events: "evcc/events"
-    # Topic to send the target charging time. Use %s as placeholder for the vehicle id
+    # Topic to send the target charging time. 
+    # Use %s as a placeholder for the vehicle ID
     planSoc: "evcc/vehicles/%s/planSoc"
-# List of vehicles that should be monitored for getting connected    
+
+# List of vehicles to monitor for connection events    
 vehicles:
-  - name: "ioniq6"
-    # Default SoC when not given in an individual entry
+  - name: "car"
+    # Default SoC when not specified in individual entries
     soc: 80
     # Weekly schedule for charging
     schedule:
-        # Day can be any weekday or "weekend" (Sat & Sun) 
-        # or "workday" (Mon - Fri)
+      # Day can be any weekday or special keywords like "weekend" (Sat & Sun) 
+      # or "workday" (Mon - Fri)
       - day: "Monday"
-        # Time when the charging must be finished and the vehicle must have
-        # reached its target SoC
+        # Time when charging must be complete, with the target SoC reached
         time: "07:00"
-        # Target SoC, overriding the default defined above
+        # Override default SoC
         soc: 70
       - day: "Wednesday"
         time: "07:00"
-        # No soc specified; will use global soc (80)
+        # Uses the global SoC (80) as no specific value is provided
       - day: "Friday"
         time: "07:00"
         soc: 90
       - day: "workday"
         time: "08:00"
-        # Applies to all workdays not already specified
+        # Applies to all weekdays not explicitly listed
       - day: "weekend"
         time: "09:00"
         soc: 60
-
 ```
-
-The communication works via MQTT. For this to work, you need to setup the MQTT integration evcc correspondingly. Here are the relevant parts needed to connect the dots:
+   
+### Communication via MQTT
+To enable this functionality, set up MQTT integration in evcc with the following configuration:
 
 ``` yaml
 # Connect to the same MQTT broker as evcc-charging-planner
@@ -77,41 +71,34 @@ mqtt:
   broker: "broker.mqtt"
   user: "user"
   password: "pass"
-  
-# push messages
+
+# Push messages
 messaging:
   events:
     connect:
-      # ${vehicleName} is replaced by the vehicle id that connects, 
-      # ${mode} is the charging mode (e.g. "PV")
-      # the type needs is "connect"
-      # Keep the msg as is as evcc-charging-planner excepts it to be like 
-      # this
-      msg: '{"vehicle": "${vehicleName}", "type": "connect"}'
+      # ${vehicleName} is replaced by the vehicle ID, and ${mode} by the charging mode (e.g., "PV").
+      # The message type must be "connect".
+      # Keep the message format as-is, as evcc-charging-planner expects this structure.
+      msg: '{"vehicle": "${vehicleName}", "mode": "${mode}", "type": "connect"}'
   services:
-      # New "custom" service for sending out push message. 
-      # Any plugin as described in https://docs.evcc.io/docs/reference/plugins
-      # can be used
+    # New "custom" service for sending push messages.
+    # Any plugin described in https://docs.evcc.io/docs/reference/plugins can be used.
     - type: custom
       send:
         # Triggers MQTT plugins
         source: mqtt
-        # Send all push event to this topic. Keep this as default.
+        # Send all push events to this topic (default value)
         topic: "evcc/events"
 ```
 
-### Future
+### Future Development
 
-For the future I could imagine that the simple planning logic could be integrated into upstream evcc. We will see.
+In the future, this functionality could be integrated directly into evcc. Other potential enhancements include:
 
-Other ideas is to extend the way how to configure the schedule:
-
-* Connect to Google Calendar and check for entries that indicate a business trip. Set the end charging time to beginning of such meetings (or with some buffer, but you get the idea)
-* Integrate an AI Agentic Workflow to let the user specify the plan with natural language
-* Examine weather forecasts and tariff forecast to optimize costs.
-
+* **Google Calendar Integration**: Sync with calendar events (e.g., business trips) to set charging end times based on scheduled meetings.
+* **Natural Language Scheduling**: Use AI to allow users to define charging plans with natural language commands.
+* **Weather and Tariff Forecasts**: Incorporate weather and dynamic pricing data to optimize charging costs.
 
 ### Feedback
 
-Please use GitHub issues to leave any feedback.
-
+For questions or suggestions, please open an issue on GitHub.

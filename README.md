@@ -6,17 +6,27 @@ While evcc allows you to set a single target time for the end of a charging sess
 
 Fortunately, thanks to evcc's extensibility, you can implement such a scheduler yourself. `evcc-charging-planner` is a proof of concept that implements such a planner.
 
-Here's how it works:
-
-- **Event Detection**: When evcc detects a vehicle connection, it can trigger an event to external services as configured in its settings.
-- **Charging Plan Calculation**: An external program listens for these events and calculates the next charging session's end time. By default, evcc uses excess solar energy from your PV system, but it ensures your car reaches the configured State of Charge (SoC) by the specified time. If solar energy isn't sufficient, it draws the remaining energy from the grid, potentially optimizing costs by using dynamic electricity pricing.
-- **Plan Submission**: The program sends the calculated end time and target SoC to evcc, which sets the charging schedule accordingly.
-
-In summary, this setup automates the process of configuring a charging plan in evcc whenever your car is connected to the wallbox.
-
 > [!IMPORTANT]
 > This project is a Proof of Concept, meaning long-term support is not planned.  
 > It requires the latest version of evcc, which you must compile from the [evcc GitHub repository](https://github.com/evcc-io/evcc). There is no official release yet.
+
+## Building and Running
+
+With go setup properly you can compile the binary with 
+
+``` shell
+make build
+```
+
+To build a container image and push it to a registry use `make image`. You need to adapt the image name at the beginning of `Makefile`.
+
+You run it with 
+
+```shell
+./evcc-charging-planner -config <config.yaml>
+```
+
+`<config.yaml>` is the path to the configuration file described in the next section.
 
 ## Example Configuration
 
@@ -66,7 +76,8 @@ vehicles:
 ```
    
 ### Communication via MQTT
-To enable this functionality, set up MQTT integration in evcc with the following configuration:
+
+To enable this functionality, set up MQTT integration in the evcc configuration with the following:
 
 ``` yaml
 # Connect to the same MQTT broker as evcc-charging-planner
@@ -79,9 +90,11 @@ mqtt:
 messaging:
   events:
     connect:
-      # ${vehicleName} is replaced by the vehicle ID, and ${mode} by the charging mode (e.g., "PV").
+      # ${vehicleName} is replaced by the vehicle ID, and ${mode} 
+      # by the charging mode (e.g., "PV").
       # The message type must be "connect".
-      # Keep the message format as-is, as evcc-charging-planner expects this structure.
+      # Keep the message format as-is, as evcc-charging-planner expects 
+      # this structure.
       msg: '{"vehicle": "${vehicleName}", "mode": "${mode}", "type": "connect"}'
   services:
     # New "custom" service for sending push messages.
@@ -93,6 +106,16 @@ messaging:
         # Send all push events to this topic (default value)
         topic: "evcc/events"
 ```
+
+## Architecture
+
+Here's how it works:
+
+- **Event Detection**: When evcc detects a vehicle connection, it can trigger an event to external services as configured in its settings.
+- **Charging Plan Calculation**: An external program listens for these events and calculates the next charging session's end time. By default, evcc uses excess solar energy from your PV system, but it ensures your car reaches the configured State of Charge (SoC) by the specified time. If solar energy isn't sufficient, it draws the remaining energy from the grid, potentially optimizing costs by using dynamic electricity pricing.
+- **Plan Submission**: The program sends the calculated end time and target SoC to evcc, which sets the charging schedule accordingly.
+
+In summary, this setup automates the process of configuring a charging plan in evcc whenever your car is connected to the wallbox.
 
 ### Future Development
 

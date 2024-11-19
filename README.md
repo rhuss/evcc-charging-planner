@@ -4,7 +4,9 @@
 
 While evcc allows you to set a single target time for the end of a charging session, this setting is cleared after the session ends, requiring manual re-entry for regular schedules. 
 
-Fortunately, thanks to evcc's extensibility, you can implement such a scheduler yourself. Here's how it works:
+Fortunately, thanks to evcc's extensibility, you can implement such a scheduler yourself. `evcc-charging-planner` is a proof of concept that implements such a planner.
+
+Here's how it works:
 
 - **Event Detection**: When evcc detects a vehicle connection, it can trigger an event to external services as configured in its settings.
 - **Charging Plan Calculation**: An external program listens for these events and calculates the next charging session's end time. By default, evcc uses excess solar energy from your PV system, but it ensures your car reaches the configured State of Charge (SoC) by the specified time. If solar energy isn't sufficient, it draws the remaining energy from the grid, potentially optimizing costs by using dynamic electricity pricing.
@@ -12,7 +14,8 @@ Fortunately, thanks to evcc's extensibility, you can implement such a scheduler 
 
 In summary, this setup automates the process of configuring a charging plan in evcc whenever your car is connected to the wallbox.
 
-> [!IMPORTANT]  
+> [!IMPORTANT]
+> This project is a Proof of Concept, meaning long-term support is not planned.  
 > It requires the latest version of evcc, which you must compile from the [evcc GitHub repository](https://github.com/evcc-io/evcc). There is no official release yet.
 
 ## Example Configuration

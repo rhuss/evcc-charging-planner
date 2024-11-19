@@ -12,7 +12,7 @@ Fortunately, thanks to evcc's extensibility, you can implement such a scheduler 
 
 In summary, this setup automates the process of configuring a charging plan in evcc whenever your car is connected to the wallbox.
 
-> > [!IMPORTANT]  
+> [!IMPORTANT]  
 > It requires the latest version of evcc, which you must compile from the [evcc GitHub repository](https://github.com/evcc-io/evcc). There is no official release yet.
 
 ## Example Configuration

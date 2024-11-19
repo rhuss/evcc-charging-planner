@@ -3,7 +3,7 @@ module github.com/rhuss/evcc-charging-planner
 go 1.23.3
 
 require (
-	github.com/evcc-io/evcc v0.0.0-20241118085744-1b61e2730406
+	github.com/evcc-io/evcc v0.0.0-20241119080256-1f2d2ceec3a7
 	gopkg.in/yaml.v2 v2.4.0
 )
 

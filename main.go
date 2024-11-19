@@ -20,6 +20,7 @@ type Config struct {
 	MQTT     MqttConfig      `yaml:"mqtt"`
 	Vehicles []VehicleConfig `yaml:"vehicles"`
 	Log      string          `yaml:"log"`
+	Timezone string          `yaml:"timezone"` // New field for timezone
 }
 
 type MqttConfig struct {
@@ -41,13 +42,13 @@ type TopicsConfig struct {
 
 type VehicleConfig struct {
 	Name     string          `yaml:"name"`
-	SOC      int             `yaml:"soc"` // Changed from target_soc to soc
+	SOC      int             `yaml:"soc"`
 	Schedule []scheduleEntry `yaml:"schedule"`
 }
 
 type scheduleEntry struct {
-	Day  string `yaml:"day"`  // Changed from weekday to day
-	Time string `yaml:"time"` // Changed from end_time to time
+	Day  string `yaml:"day"`
+	Time string `yaml:"time"`
 	SOC  *int   `yaml:"soc,omitempty"`
 }
 
@@ -60,9 +61,12 @@ type Event struct {
 
 var log *util.Logger
 
-func main() {
+func init() {
 	log = util.NewLogger("charging_planner")
 	util.LogLevel("info", nil)
+}
+
+func main() {
 
 	// Parse command-line options
 	configPath := flag.String("config", "", "Path to the YAML configuration file")
@@ -91,12 +95,18 @@ func main() {
 	err = yaml.Unmarshal(configData, &config)
 	if err != nil {
 		log.FATAL.Printf("Error parsing configuration file: %v", err)
+		os.Exit(1)
 	}
 
 	if config.Log != "" {
 		util.LogLevel(config.Log, nil)
 	}
 
+	timezone, err := getTimezoneFromConfig(config)
+	if err != nil || timezone == nil {
+		log.FATAL.Printf("Can't parse timezone from config: %v", err)
+		os.Exit(1)
+	}
 	mConfig := &config.MQTT
 	client, err := mqtt.NewClient(log, mConfig.Broker, mConfig.User, mConfig.Password, mConfig.ClientID, 1, mConfig.Insecure, mConfig.CaCert, mConfig.ClientCert, mConfig.ClientKey)
 	if err != nil {
@@ -107,7 +117,7 @@ func main() {
 
 	// Subscribe to the MQTT topic
 	topic := config.MQTT.Topics.Events
-	err = client.Listen(topic, createMessageHandler(client, &config))
+	err = client.Listen(topic, createMessageHandler(client, &config, timezone))
 	if err != nil {
 		log.FATAL.Printf("Error subscribing to topic %s: %v", topic, err)
 		os.Exit(1)
@@ -117,50 +127,60 @@ func main() {
 	select {}
 }
 
-func createMessageHandler(client *mqtt.Client, config *Config) func(string) {
+func getTimezoneFromConfig(config Config) (*time.Location, error) {
+	// Load timezone
+	if config.Timezone != "" {
+		log.TRACE.Printf("Using timezone: %s", config.Timezone)
+		return time.LoadLocation(config.Timezone)
+	}
+	log.TRACE.Printf("Using local timezone: %s", time.Local)
+	return time.Local, nil
+}
+
+func createMessageHandler(client *mqtt.Client, config *Config, timezone *time.Location) func(string) {
+	if timezone == nil {
+		panic("no timezone given")
+	}
 	return func(msg string) {
 		// Parse the message payload
 		var event Event
 		err := json.Unmarshal([]byte(msg), &event)
 		if err != nil {
-			log.ERROR.Printf("error parsing event JSON: %v", err)
+			log.ERROR.Printf("Error parsing event JSON: %v", err)
 			return
 		}
 
-		if event.Mode != "connect" {
-			log.DEBUG.Printf("ignoring non-connect event %v", event)
+		if event.Type != "connect" {
+			log.DEBUG.Printf("Ignoring non-connect event %v", event)
 			return
 		}
 
 		vehicleConfig := extractVehicleConfig(config, event)
 		if vehicleConfig == nil {
-			log.DEBUG.Printf("ignoring event for %s (no configuration)", event.Vehicle)
+			log.DEBUG.Printf("Ignoring event for %s (no configuration)", event.Vehicle)
 			return
 		}
 
 		// Calculate the next charging time and target SOC
-		nextChargeTime, targetSOC, err := calculateNextChargeTime(vehicleConfig.Schedule, time.Now(), vehicleConfig.SOC)
+		now := time.Now().In(timezone)
+		nextChargeTime, targetSOC, err := calculateNextChargeTime(vehicleConfig.Schedule, now, vehicleConfig.SOC, timezone)
 		if err != nil {
-			log.ERROR.Printf("error calculating next charge time for %s: %v", event.Vehicle, err)
+			log.ERROR.Printf("Error calculating next charge time for %s: %v", event.Vehicle, err)
 			return
 		}
+		log.DEBUG.Printf("Calculated next charging time for %s: %v", event.Vehicle, nextChargeTime)
 
 		err = sendChargingEndTime(targetSOC, nextChargeTime, config.MQTT.Topics.PlanSoc, vehicleConfig.Name, client)
 		if err != nil {
-			log.ERROR.Printf("error setting target time %s (target-soc: %d) : %v", nextChargeTime, targetSOC, err)
+			log.ERROR.Printf("Error setting target time %s (target-soc: %d): %v", nextChargeTime, targetSOC, err)
 		}
 	}
 }
 
 func sendChargingEndTime(targetSOC int, nextChargeTime time.Time, planSocTopic string, vehicleId string, client *mqtt.Client) error {
-	// Prepare the payload
-	payloadMap := map[string]interface{}{
-		"value": targetSOC,
-		"time":  nextChargeTime.Format(time.RFC3339),
-	}
-	payloadBytes, err := json.Marshal(payloadMap)
+	payloadBytes, err := createSetPlanPayload(targetSOC, nextChargeTime)
 	if err != nil {
-		return fmt.Errorf("error marshaling payload JSON: %w", err)
+		return err
 	}
 
 	// Publish to the MQTT topic
@@ -170,8 +190,23 @@ func sendChargingEndTime(targetSOC int, nextChargeTime time.Time, planSocTopic s
 		return fmt.Errorf("error publishing to topic %s: %w", publishTopic, err)
 	}
 
-	log.DEBUG.Printf("published to %s for vehicle '%s': %s", planSocTopic, vehicleId, string(payloadBytes))
+	log.DEBUG.Printf("Published to %s for vehicle '%s': %s", publishTopic, vehicleId, string(payloadBytes))
 	return nil
+}
+
+func createSetPlanPayload(targetSOC int, nextChargeTime time.Time) ([]byte, error) {
+	// Prepare the payload
+	payloadMap := map[string]interface{}{
+		"value": targetSOC,
+		"time":  nextChargeTime.Format(time.RFC3339),
+	}
+	log.TRACE.Printf("Map to serialize: %v", payloadMap)
+	payloadBytes, err := json.Marshal(payloadMap)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling payload JSON: %w", err)
+	}
+	log.TRACE.Printf("Marshaled JSON: %s", string(payloadBytes))
+	return payloadBytes, nil
 }
 
 func extractVehicleConfig(config *Config, event Event) *VehicleConfig {
@@ -184,14 +219,13 @@ func extractVehicleConfig(config *Config, event Event) *VehicleConfig {
 	return nil
 }
 
-func calculateNextChargeTime(schedule []scheduleEntry, now time.Time, globalSOC int) (time.Time, int, error) {
+func calculateNextChargeTime(schedule []scheduleEntry, now time.Time, globalSOC int, timezone *time.Location) (time.Time, int, error) {
 	var candidateTimes []struct {
 		Time time.Time
 		SOC  int
 	}
 
-	location := time.Local // Use local time zone
-
+	log.TRACE.Printf("Timezone: %s", timezone.String())
 	for _, entry := range schedule {
 		// Determine the weekdays for this entry
 		weekdays, err := parseDays(entry.Day)
@@ -199,8 +233,8 @@ func calculateNextChargeTime(schedule []scheduleEntry, now time.Time, globalSOC 
 			return time.Time{}, 0, err
 		}
 
-		// Parse the time in local time zone
-		parsedTime, err := time.ParseInLocation("15:04", entry.Time, location)
+		// Parse the time in the specified timezone
+		parsedTime, err := time.ParseInLocation("15:04", entry.Time, timezone)
 		if err != nil {
 			return time.Time{}, 0, err
 		}
@@ -212,10 +246,10 @@ func calculateNextChargeTime(schedule []scheduleEntry, now time.Time, globalSOC 
 		}
 
 		for _, weekday := range weekdays {
-			// Calculate the candidate date in local time zone
+			// Calculate the candidate date in the specified timezone
 			daysUntilWeekday := (int(weekday) - int(now.Weekday()) + 7) % 7
 			candidateDate := now.AddDate(0, 0, daysUntilWeekday)
-			candidateTime := time.Date(candidateDate.Year(), candidateDate.Month(), candidateDate.Day(), parsedTime.Hour(), parsedTime.Minute(), 0, 0, location)
+			candidateTime := time.Date(candidateDate.Year(), candidateDate.Month(), candidateDate.Day(), parsedTime.Hour(), parsedTime.Minute(), 0, 0, timezone)
 			if candidateTime.Before(now) {
 				// If the candidate time is before now, add 7 days
 				candidateTime = candidateTime.AddDate(0, 0, 7)

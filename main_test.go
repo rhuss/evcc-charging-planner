@@ -2,6 +2,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"gopkg.in/yaml.v2"
 	"os"
 	"testing"
@@ -111,7 +113,8 @@ func TestCalculateNextChargeTime(t *testing.T) {
 				t.Fatalf("Invalid expectedTime format: %v", err)
 			}
 
-			nextTime, targetSOC, err := calculateNextChargeTime(schedule, currentTime, globalSOC)
+			tz := time.Local
+			nextTime, targetSOC, err := calculateNextChargeTime(schedule, currentTime, globalSOC, tz)
 			if err != nil {
 				t.Errorf("calculateNextChargeTime returned error: %v", err)
 			}
@@ -120,6 +123,71 @@ func TestCalculateNextChargeTime(t *testing.T) {
 			}
 			if targetSOC != tc.expectedSOC {
 				t.Errorf("At time %v, expected SOC %d, got %d", currentTime, tc.expectedSOC, targetSOC)
+			}
+		})
+	}
+}
+
+func TestCreateSetPlanPayload(t *testing.T) {
+	// Define test cases
+	testCases := []struct {
+		targetSOC      int
+		nextChargeTime string // Input time as string in local time
+	}{
+		{
+			targetSOC:      80,
+			nextChargeTime: "2023-03-10 07:00",
+		},
+		{
+			targetSOC:      60,
+			nextChargeTime: "2023-03-11 09:00",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("SOC %d at %s", tc.targetSOC, tc.nextChargeTime), func(t *testing.T) {
+			// Parse nextChargeTime string into time.Time in local time zone
+			location := time.Local
+			parsedTime, err := time.ParseInLocation("2006-01-02 15:04", tc.nextChargeTime, location)
+			if err != nil {
+				t.Fatalf("Invalid nextChargeTime format: %v", err)
+			}
+
+			// Call createSetPlanPayload
+			payloadBytes, err := createSetPlanPayload(tc.targetSOC, parsedTime)
+			if err != nil {
+				t.Errorf("Error creating set plan payload: %v", err)
+			}
+
+			// Unmarshal payload to verify contents
+			var payloadMap map[string]interface{}
+			err = json.Unmarshal(payloadBytes, &payloadMap)
+			if err != nil {
+				t.Errorf("Error unmarshaling payload JSON: %v", err)
+			}
+
+			// Check 'value' field
+			if payloadMap["value"] != float64(tc.targetSOC) {
+				t.Errorf("Expected value %d, got %v", tc.targetSOC, payloadMap["value"])
+			}
+
+			// Check 'time' field
+			payloadTimeStr, ok := payloadMap["time"].(string)
+			if !ok {
+				t.Errorf("Expected 'time' field to be a string")
+				return
+			}
+
+			// Parse the time string from the payload
+			payloadTime, err := time.Parse(time.RFC3339, payloadTimeStr)
+			if err != nil {
+				t.Errorf("Error parsing time from payload: %v", err)
+				return
+			}
+
+			// Verify that the payload time matches the input time
+			if !payloadTime.Equal(parsedTime) {
+				t.Errorf("Expected time %v, got %v", parsedTime, payloadTime)
 			}
 		})
 	}
